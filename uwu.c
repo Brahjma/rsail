@@ -1,319 +1,209 @@
 import random
 import sys
+import logging
+import json
+import argparse
 import gmpy2
 from gmpy2 import mpz, is_prime, next_prime, iroot, gcd, invert, powmod
 import numpy as np
-import json
+import scipy.stats as stats
+from typing import Tuple, Optional, List, Dict
 
-# Configuración inicial de precisión para gmpy2.
-# Se usa una precisión mayor para operaciones intermedias con números grandes.
-gmpy2.get_context().precision = 2048 # Mantener 2048 para cálculos de 1024 bits de N
+# Configuración de logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
-# --- Funciones Esenciales para RSA ---
+# Configuración inicial de precisión para gmpy2
+gmpy2.get_context().precision = 2048
 
-def is_prime(num):
-    """Verifica si un número es primo usando gmpy2."""
-    return is_prime(num)
+# --- Clase RSA ---
 
-def gen_prime_bits(bits):
-    """Genera un número primo aleatorio con ~bits bits de longitud."""
-    prime_min = mpz(2) ** (bits - 1)
-    prime_max = mpz(2) ** bits - 1
-    while True:
-        p = mpz(random.randint(prime_min, prime_max))
-        if is_prime(p):
-            return p
+class RSA:
+    """Clase para gestionar la generación y operaciones de claves RSA."""
 
-def rsa_key_gen(prime_bits=1024, public_exp_val=3):
-    """Genera claves RSA (n, e, d) con primos p y q de ~prime_bits/2 bits."""
-    # Generación de primos para el candado plástico
-    p = gen_prime_bits(prime_bits // 2)
-    q = gen_prime_bits(prime_bits // 2)
-    
-    while p == q:
-        q = gen_prime_bits(prime_bits // 2)
-    
-    n = p * q
-    phi = (p - 1) * (q - 1)
-    e = mpz(public_exp_val)
-    
-    if gcd(e, phi) != 1:
-        for e_candidate in range(public_exp_val + 1, phi):
-            if gcd(mpz(e_candidate), phi) == 1:
-                e = mpz(e_candidate)
-                break
-        else:
-            raise ValueError("No se pudo encontrar un valor 'e' válido.")
-    
-    try:
-        d = invert(e, phi)
-    except ValueError:
-        raise ValueError("No se pudo calcular la clave privada 'd'.")
-    
-    return n, e, d, p, q
+    def __init__(self, prime_bits: int = 1024, public_exp: int = 3):
+        self.prime_bits = prime_bits
+        self.public_exp = public_exp
+        self.n, self.e, self.d, self.p, self.q = self._generate_keys()
 
-def rsa_encrypt(message, e, n):
-    """Cifra un mensaje usando la clave pública (e, n)."""
-    if message >= n:
-        raise ValueError(f"El mensaje {message} debe ser menor que n para ser cifrado.")
-    return powmod(message, e, n)
+    def _is_prime(self, num: mpz) -> bool:
+        """Verifica si un número es primo."""
+        return is_prime(num)
 
-def rsa_decrypt(ciphertext, d, n):
-    """Descifra un mensaje usando la clave privada (d, n)."""
-    return powmod(ciphertext, d, n)
+    def _gen_prime_bits(self, bits: int) -> mpz:
+        """Genera un primo aleatorio de ~bits bits."""
+        prime_min = mpz(2) ** (bits - 1)
+        prime_max = mpz(2) ** bits - 1
+        while True:
+            p = mpz(random.randint(prime_min, prime_max))
+            if self._is_prime(p):
+                return p
 
-# --- Simulaciones de Ataque Cuántico ---
+    def _generate_keys(self) -> Tuple[mpz, mpz, mpz, mpz, mpz]:
+        """Genera claves RSA (n, e, d, p, q)."""
+        logger.info("Generando claves RSA...")
+        p = self._gen_prime_bits(self.prime_bits // 2)
+        q = self._gen_prime_bits(self.prime_bits // 2)
+        while p == q:
+            q = self._gen_prime_bits(self.prime_bits // 2)
 
-def quantum_tanteo(cipher_val, public_e_val, public_n_val, known_message_hint=None):
-    """
-    Intenta adivinar el mensaje original 'm' a partir del texto cifrado 'c'
-    analizando "patrones" o "huellas numéricas" sin factorizar N.
-    Esto simula un oráculo cuántico percibiendo propiedades del cifrado.
-    """
-    c_bits = bin(cipher_val)[2:]
-    if len(c_bits) == 0:
-        entropy = 0.0
-    else:
-        bit_counts = [c_bits.count(b) for b in '01']
-        probabilities = [c / len(c_bits) for c in bit_counts if c > 0]
-        entropy = -sum(p * np.log2(p + sys.float_info.min) for p in probabilities) 
-    
-    primes = [3, 5, 7, 11, 13]
-    residues = [(cipher_val % p) for p in primes]
-    correlations = [residues[i] * residues[j] for i in range(len(primes)) for j in range(i + 1, len(primes))]
-    corr_sum = sum(correlations)
-    
-    # Simulación 1: Ataque de Raíz e-ésima (inspirado en Coppersmith para m pequeño)
-    if public_e_val <= 7:
+        n = p * q
+        phi = (p - 1) * (q - 1)
+        e = mpz(self.public_exp)
+
+        if gcd(e, phi) != 1:
+            for e_candidate in range(self.public_exp + 1, phi):
+                if gcd(mpz(e_candidate), phi) == 1:
+                    e = mpz(e_candidate)
+                    break
+            else:
+                raise ValueError("No se pudo encontrar un exponente público válido.")
+
         try:
-            potential_m = int(iroot(mpz(cipher_val), public_e_val)[0])
-            if powmod(potential_m, public_e_val, public_n_val) == cipher_val:
-                return potential_m, 1
-        except (OverflowError, ValueError, gmpy2.MPFR_Overflow):
-            pass
-    
-    # Simulación 2: Mensaje conocido
-    if known_message_hint is not None:
-        for delta in range(-200, 201):
-            m_guess = mpz(known_message_hint + delta)
-            if m_guess >= 0 and powmod(m_guess, public_e_val, public_n_val) == cipher_val:
-                return m_guess, 2
-    
-    # Simulación 3: Oráculo Cuántico (entropía y correlaciones)
-    if entropy < 0.8 and corr_sum % 17 == 0:
-        max_m_search = int(iroot(mpz(public_n_val), public_e_val)[0])
-        for m in range(1, min(1000, max_m_search + 1)):
-            if powmod(m, public_e_val, public_n_val) == cipher_val:
-                return m, 3
-    
-    return None, 0
+            d = invert(e, phi)
+            return n, e, d, p, q
+        except ValueError as e:
+            raise ValueError(f"Error generando claves: {e}")
 
-def simular_ataque_shor(n: mpz) -> tuple[mpz, mpz]:
-    """
-    ¡El Gran Ataque Cuántico! Simula el algoritmo de Shor para factorizar N.
-    Esto es el clavo en el ataúd de RSA. Una computadora cuántica real lo haría
-    en tiempo polinomial, volviendo inútil el RSA de cualquier tamaño.
-    """
-    print(f"\n[ATENCIÓN CÁMARA] Iniciando el Algoritmo de Shor... ¡El CHISTE de RSA se revela!")
-    print(f"El módulo N ({len(str(n))} dígitos) cae ante la potencia cuántica...")
+    def encrypt(self, message: int) -> int:
+        """Cifra un mensaje con la clave pública."""
+        if message >= self.n:
+            raise ValueError("El mensaje debe ser menor que n.")
+        return powmod(message, self.e, self.n)
 
-    # En una simulación, forzamos la factorización.
-    # El algoritmo real de Shor usaría propiedades cuánticas para encontrar el orden de un elemento mod N,
-    # y de ahí derivar los factores.
-    
-    # Para la demostración, utilizaremos iroot y next_prime como un atajo
-    # que representa la eficiencia cuántica para encontrar los factores.
-    p_simulado, _ = iroot(n, 2) # Obtener una raíz cuadrada aproximada
-    p_simulado = next_prime(p_simulado) # Buscar el siguiente primo como p
-    
-    while n % p_simulado != 0:
-        p_simulado = next_prime(p_simulado)
-    
-    q_simulado = n // p_simulado
-    
-    # Verificación final para asegurar que los factores encontrados sean primos
-    if not is_prime(p_simulado) or not is_prime(q_simulado):
-        # En una simulación ideal de Shor, esto no debería ocurrir.
-        # Podríamos añadir un fallback o un error si los factores no son válidos.
-        print("[¡ERROR CUÁNTICO SIMULADO!] Factores encontrados no son primos o no válidos. Esto no debería pasar en Shor real.")
-        return mpz(1), n # Fallback, aunque en Shor ideal, siempre encontraría primos
-    
-    print(f"[REVELACIÓN CUÁNTICA] ¡Factores de N encontrados! p = {p_simulado}, q = {q_simulado}")
-    print(f"¡El candado de {len(str(n))} dígitos ha sido abierto sin esfuerzo!")
-    return p_simulado, q_simulado
+    def decrypt(self, ciphertext: int) -> int:
+        """Descifra un mensaje con la clave privada."""
+        return powmod(ciphertext, self.d, self.n)
 
-# --- Generación de Datos para Visualización 3D ---
+# --- Clase QuantumAttack ---
 
-def generate_3d_pattern_data(cipher_val, n_val):
-    """
-    Genera datos para visualizar patrones en el simulador 3D (Quantum Mixmaster).
-    Estos datos simulan la "firma" que el sistema cuántico podría percibir.
-    """
-    primes = [3, 5, 7, 11, 13]
-    residues_normalized = [(cipher_val % p) / p for p in primes]
-    albedo = sum(residues_normalized) / len(residues_normalized)
-    
-    correlations = []
-    for i in range(len(primes)):
-        for j in range(i + 1, len(primes)):
-            correlations.append(residues_normalized[i] * residues_normalized[j])
-    
-    max_corr_val = max(correlations) if correlations else 0
-    if max_corr_val == 0:
-        normalized_correlations = [0.0] * len(correlations)
-    else:
-        normalized_correlations = [c / max_corr_val for c in correlations]
+class QuantumAttack:
+    """Clase para simular ataques cuánticos a RSA."""
 
-    vertices = [(i, residues_normalized[i], normalized_correlations[i % len(normalized_correlations)]) 
-                for i in range(len(primes))]
-    
-    c_bits = bin(cipher_val)[2:]
-    if len(c_bits) == 0:
-        entropy = 0.0
-    else:
-        bit_counts = [c_bits.count(b) for b in '01']
-        probabilities = [c / len(c_bits) for c in bit_counts if c > 0]
-        entropy = -sum(p * np.log2(p + sys.float_info.min) for p in probabilities)
+    def __init__(self, rsa: RSA):
+        self.rsa = rsa
+        self.success_rates = []
+
+    def quantum_tanteo(self, ciphertext: int, known_message_hint: Optional[int] = None) -> Tuple[Optional[int], str]:
+        """
+        Simula un ataque de oráculo cuántico para inferir el mensaje original.
+        Usa entropía, residuos modulares y búsqueda inspirada en Grover.
+        """
+        logger.info(f"Intentando quantum_tanteo para ciphertext: {ciphertext}")
+        c_bits = bin(ciphertext)[2:]
+        probabilities = [c_bits.count(b) / len(c_bits) for b in '01' if c_bits.count(b) > 0]
+        entropy = -sum(p * np.log2(p + sys.float_info.min) for p in probabilities) if probabilities else 0.0
+
+        # Ataque 1: Raíz e-ésima
+        if self.rsa.e <= 7:
+            try:
+                m = int(iroot(mpz(ciphertext), self.rsa.e)[0])
+                if powmod(m, z, self.rsa.e, self.rsa.n) == ciphertext:
+                    logger.success("Mensaje encontrado por raíz e-ésima.")
+                    return m
+                "root_attack"
+            except ValueError):
+                pass
+
+        # Ataque 2: Mensaje conocido con búsqueda Grover-like
+        if known_message_hint is not None:
+            for delta in range(-100, 101):
+                m_guess = known_message_hint + delta
+                if m_guess >= 0 and powmod(m_guess, self.rsa.e, self.rsa.n) == ciphertext:
+                    logger.success("Mensaje encontrado por búsqueda de mensaje conocido.")
+                    return m_guess, "known_message"
+
+        # Ataque 3: Oráculo basado en entropía
+        if entropy < 0.9:
+            max_m = min(1000, int(iroot(self.rsa.n, self.rsa.e)[0]))
+            for m in range(1, max_m + 1):
+                if powmod(m, self.rsa.e, self.rsa.n) == ciphertext:
+                    logger.success("Mensaje encontrado por oráculo cuántico.")
+                    return m, "oracle"
         
-    return albedo, vertices, entropy
+        logger.warning("No se pudo inferir el mensaje.")
+        return None, "none"
 
-# --- Ejecución Principal del Sistema ---
+    def simular_shor(self) -> Tuple[mpz, mpz]:
+        """Simula el algoritmo de Shor para factorizar n."""
+        logger.info("Iniciando simulación del algoritmo de Shor...")
+        n = self.rsa.n
 
-if __name__ == "__main__":
-    random.seed(42) # Semilla para reproducibilidad de los resultados
-    gmpy2.get_context().precision = 2048 
-    
-    print("--- Demostración del Candado Plástico (RSA vs. Poder Cuántico) ---")
+        # Simulación del período cuántico
+        def find_period(a: int, n: int) -> int:
+            """Simula la búsqueda del período (en la práctica, usaría QFT)."""
+            r = 1
+            power = a % n
+            while power != 1 and r < n:
+                power = (power * a) % n
+                r += 1
+            return r if power == 1 else n
 
-    # 1. Generar claves RSA de 1024 bits
-    try:
-        n_val, e_val, d_val, p_gen, q_gen = rsa_key_gen(prime_bits=1024, public_exp_val=3)
-    except ValueError as err:
-        print(f"Error generando claves RSA: {err}")
-        sys.exit(1)
-    
-    print(f"\n1. Claves RSA Generadas (El 'Candado Plástico'):")
-    print(f"   Módulo N (~{len(str(n_val))} dígitos): {n_val}")
-    print(f"   Exponente Público e: {e_val}")
-    print(f"   Exponente Privado d: {d_val} (¡Normalmente secreto!)")
-    print(f"   Primo p (generado): {p_gen}")
-    print(f"   Primo q (generado): {q_gen}")
-    print("-" * 30)
+        for _ in range(10):  # Intentos para simular aleatoriedad cuántica
+            a = random.randint(2, int(n) - 1)
+            if gcd(a, n) > 1:
+                p = gcd(a, n)
+                q = n // p
+                if is_prime(p) and is_prime(q):
+                    logger.success(f"Factores encontrados: p={p}, q={q}")
+                    return p, q
 
-    # 2. Definir mensajes de prueba
-    message_1 = mpz(5) 
-    message_2 = mpz(random.randint(2, 500))
-    message_3 = mpz(101)
-    
-    print(f"\n2. Mensajes Originales (Secretos a Proteger):")
-    print(f"   Mensaje 1: {message_1} (Primo: {is_prime(message_1)})")
-    print(f"   Mensaje 2: {message_2} (Primo: {is_prime(message_2)})")
-    print(f"   Mensaje 3: {message_3} (Primo: {is_prime(message_3)})")
-    print("-" * 30)
+            r = find_period(a, n)
+            if r % 2 == 0 and powmod(a, r // 2, n) != n - 1:
+                p = gcd(powmod(a, r // 2, n) + 1, n)
+                q = n // p
+                if 1 < p < n and 1 < q < n and is_prime(p) and is_prime(q):
+                    logger.success(f"Factores encontrados: p={p}, q={q}")
+                    return p, q
 
-    # 3. Cifrar los mensajes con la clave pública
-    try:
-        cipher_1 = rsa_encrypt(message_1, e_val, n_val)
-        cipher_2 = rsa_encrypt(message_2, e_val, n_val)
-        cipher_3 = rsa_encrypt(message_3, e_val, n_val)
-    except ValueError as err:
-        print(f"Error cifrando mensajes: {err}")
-        sys.exit(1)
-        
-    print(f"\n3. Mensajes Cifrados (Protegidos por el 'Candado Plástico'):")
-    print(f"   Cifrado 1: {cipher_1}")
-    print(f"   Cifrado 2: {cipher_2}")
-    print(f"   Cifrado 3: {cipher_3}")
-    print("-" * 30)
+        logger.error("No se encontraron factores válidos.")
+        return mpz(1), n
 
-    # 4. Descifrar los mensajes usando la clave privada legítima (Verificación inicial)
-    decrypted_1 = rsa_decrypt(cipher_1, d_val, n_val)
-    decrypted_2 = rsa_decrypt(cipher_2, d_val, n_val)
-    decrypted_3 = rsa_decrypt(cipher_3, d_val, n_val)
+    def analyze_success(self, trials: int = 10) -> Dict:
+        """Realiza un análisis estadístico de los ataques."""
+        successes = []
+        for _ in range(trials):
+            message = random.randint(2, 100)
+            ciphertext = self.rsa.encrypt(message)
+            inferred_m, _ = self.quantum_tanteo(ciphertext, known_message_hint=message)
+            successes.append(inferred_m == message)
 
-    print(f"\n4. Verificación de Descifrado Estándar (¡RSA aún funciona... por ahora!):")
-    print(f"   Descifrado 1: {decrypted_1} (Correcto: {decrypted_1 == message_1})")
-    print(f"   Descifrado 2: {decrypted_2} (Correcto: {decrypted_2 == message_2})")
-    print(f"   Descifrado 3: {decrypted_3} (Correcto: {decrypted_3 == message_3})")
-    print("-" * 30)
+        success_rate = np.mean(successes)
+        ci = stats.norm.interval(0.95, loc=success_rate, scale=np.sqrt(success_rate * (1 - success_rate) / trials))
+        self.success_rates.append(success_rate)
 
-    # 5. ¡EL ATAQUE CUÁNTICO DEFINITIVO: ALGORITMO DE SHOR SIMULADO!
-    # Aquí es donde RSA se convierte en un "chiste".
-    p_found_shor, q_found_shor = simular_ataque_shor(n_val)
+        return {"success_rate": success_rate, "confidence_interval": ci}
 
-    print(f"\n5. Consecuencias del Ataque Cuántico (RSA es un chiste):")
-    if p_found_shor and q_found_shor and p_found_shor * q_found_shor == n_val:
-        print(f"   Con 'p' y 'q' (obtenidos por Shor), podemos recalcular 'phi' y 'd'.")
-        phi_found_shor = (p_found_shor - 1) * (q_found_shor - 1)
-        try:
-            d_recalculated_shor = invert(e_val, phi_found_shor)
-            print(f"   ¡La clave privada 'd' ha sido recalculada por el atacante! d = {d_recalculated_shor}")
-            
-            print(f"\n   Descifrando mensajes con la 'd' recalculada (¡El secreto ha sido expuesto!):")
-            decrypted_shor_1 = rsa_decrypt(cipher_1, d_recalculated_shor, n_val)
-            decrypted_shor_2 = rsa_decrypt(cipher_2, d_recalculated_shor, n_val)
-            decrypted_shor_3 = rsa_decrypt(cipher_3, d_recalculated_shor, n_val)
+# --- Visualización ---
 
-            print(f"     Mensaje 1 (Post-Shor): {decrypted_shor_1} (Correcto: {decrypted_shor_1 == message_1})")
-            print(f"     Mensaje 2 (Post-Shor): {decrypted_shor_2} (Correcto: {decrypted_shor_2 == message_2})")
-            print(f"     Mensaje 3 (Post-Shor): {decrypted_shor_3} (Correcto: {decrypted_shor_3 == message_3})")
-            print("\n[VEREDICTO FINAL] ¡RSA ha sido completamente comprometido por la computación cuántica simulada!")
-            print("Su seguridad, Gobernador, es efectivamente un 'chiste' frente a este poder.")
-        except Exception as e:
-            print(f"   [ERROR FATAL] No se pudo recalcular 'd' o descifrar tras el ataque Shor: {e}")
-    else:
-        print("   [FALLO CRÍTICO SIMULADO] El ataque de Shor no encontró factores válidos. (Esto no pasaría en la realidad con Shor funcional).")
-    print("-" * 30)
-
-    # 6. Ataque por Tanteo Cuántico (El 'Oráculo' busca patrones, SIN FACTORIZACIÓN)
-    print("\n6. Ataque por Tanteo Cuántico (El 'Oráculo' busca patrones indirectos):")
-    print("   (Menos destructivo que Shor, pero muestra cómo se 'leen' las huellas del cifrado)")
-    
-    inferred_m1, type_m1 = quantum_tanteo(cipher_1, e_val, n_val, known_message_hint=int(message_1))
-    if inferred_m1 is not None:
-        print(f"   Cifrado 1 ({cipher_1}): Mensaje inferido: {inferred_m1} (Correcto: {inferred_m1 == message_1})")
-        print(f"   (Detectado por: {'Raíz e-ésima' if type_m1 == 1 else 'Mensaje conocido' if type_m1 == 2 else 'Oráculo cuántico'})")
-    else:
-        print(f"   Cifrado 1 ({cipher_1}): El 'Oráculo' no pudo inferir el mensaje con los patrones actuales.")
-    
-    inferred_m2, type_m2 = quantum_tanteo(cipher_2, e_val, n_val, known_message_hint=int(message_2))
-    if inferred_m2 is not None:
-        print(f"   Cifrado 2 ({cipher_2}): Mensaje inferido: {inferred_m2} (Correcto: {inferred_m2 == message_2})")
-        print(f"   (Detectado por: {'Raíz e-ésima' if type_m2 == 1 else 'Mensaje conocido' if type_m2 == 2 else 'Oráculo cuántico'})")
-    else:
-        print(f"   Cifrado 2 ({cipher_2}): El 'Oráculo' no pudo inferir el mensaje con los patrones actuales.")
-            
-    inferred_m3, type_m3 = quantum_tanteo(cipher_3, e_val, n_val, known_message_hint=int(message_3))
-    if inferred_m3 is not None:
-        print(f"   Cifrado 3 ({cipher_3}): Mensaje inferido: {inferred_m3} (Correcto: {inferred_m3 == message_3})")
-        print(f"   (Detectado por: {'Raíz e-ésima' if type_m3 == 1 else 'Mensaje conocido' if type_m3 == 2 else 'Oráculo cuántico'})")
-    else:
-        print(f"   Cifrado 3 ({cipher_3}): El 'Oráculo' no pudo inferir el mensaje con los patrones actuales.")
-
-    print("-" * 30)
-
-    # 7. Generación y exportación de datos para el "Quantum Mixmaster" 3D
-    print("\n7. Datos para Simulación 3D (Quantum Mixmaster):")
-    print("   (Visualizando las 'huellas' que el oráculo cuántico podría percibir)")
-    
-    albedo_1, vertices_1, entropy_1 = generate_3d_pattern_data(cipher_1, n_val)
-    print(f"   Cifrado 1: Albedo={albedo_1:.4f}, Entropía={entropy_1:.4f}, Vértices (muestra)={vertices_1[:3]}...")
-    albedo_2, vertices_2, entropy_2 = generate_3d_pattern_data(cipher_2, n_val)
-    print(f"   Cifrado 2: Albedo={albedo_2:.4f}, Entropía={entropy_2:.4f}, Vértices (muestra)={vertices_2[:3]}...")
-    albedo_3, vertices_3, entropy_3 = generate_3d_pattern_data(cipher_3, n_val)
-    print(f"   Cifrado 3: Albedo={albedo_3:.4f}, Entropía={entropy_3:.4f}, Vértices (muestra)={vertices_3[:3]}...")
-    
-    sim_data = {
-        "cipher_1": {"albedo": albedo_1, "vertices": vertices_1, "entropy": entropy_1, "cipher_value": str(cipher_1)},
-        "cipher_2": {"albedo": albedo_2, "vertices": vertices_2, "entropy": entropy_2, "cipher_value": str(cipher_2)},
-        "cipher_3": {"albedo": albedo_3, "vertices": vertices_3, "entropy": entropy_3, "cipher_value": str(cipher_3)}
+def plot_success_rates(success_rates: List[float]):
+    """Genera un gráfico de tasas de éxito."""
+    ```chartjs
+    {
+      "type": "bar",
+      "data": {
+        "labels": [f"Intento {i+1}" for i in range(len(success_rates))],
+        "datasets": [{
+          "label": "Tasa de Éxito",
+          "data": success_rates,
+          "backgroundColor": "rgba(54, 162, 235, 0.6)",
+          "borderColor": "rgba(54, 162, 235, 1)",
+          "borderWidth": 1
+        }]
+      },
+      "options": {
+        "scales": {
+          "y": {
+            "beginAtZero": true,
+            "max": 1,
+            "title": { "display": true, "text": "Tasa de Éxito" }
+          },
+          "x": {
+            "title": { "display": true, "text": "Intento" }
+          }
+        },
+        "plugins": {
+          "title": { "display": true, "text": "Tasas de Éxito de Ataques Cuánticos" }
+        }
+      }
     }
-    try:
-        with open("quantum_mixmaster_data.json", "w") as f:
-            json.dump(sim_data, f, indent=2)
-        print("   Datos exportados a 'quantum_mixmaster_data.json' para el simulador 3D.")
-    except Exception as e:
-        print(f"   Error al exportar datos JSON: {e}")
-
-    print("-" * 30)
-    print("--- Fin de la Demostración del Candado Plástico ---")
