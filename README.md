@@ -1,0 +1,1 @@
+Este repositorio contiene una simulación en Python que ilustra cómo el algoritmo de cifrado RSA, la base de la seguridad digital actual, se vuelve inútil ante el poder de una computadora cuántica. A través de la simulación del Algoritmo de Shor (que factoriza grandes números en tiempo polinomial) y un "tanteo cuántico" basado en el análisis de patrones
